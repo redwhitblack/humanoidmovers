@@ -1,5 +1,3 @@
-export const runtime = "nodejs";
-
-export function GET() {
+export async function onRequestGet() {
   return Response.json({ ok: true, service: "humanoidmovers", ts: Date.now() });
 }

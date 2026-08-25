@@ -1,8 +1,7 @@
-import { cities, fleet } from "@/lib/content";
-import { computeQuote, formatUsd } from "@/lib/quote";
-import OpenAI from "openai";
+import { cities, fleet } from "../../src/lib/content";
+import { computeQuote, formatUsd } from "../../src/lib/quote";
 
-export const runtime = "nodejs";
+type Msg = { role: string; content: string };
 
 const SYSTEM = `You are ORACLE, dispatch intelligence for Humanoid Movers — the first commercial humanoid moving fleet in North America.
 
@@ -51,42 +50,70 @@ function localOracle(last: string) {
   return `Humanoid Movers deploys ${fleet.map((f) => f.name).join(", ")} as a finished move: scan, pack, transit, unpack. Damage rate 0.04%. Open /dispatch with two addresses, or tell me the origin, destination, and home size.`;
 }
 
-export async function POST(req: Request) {
-  const body = await req.json().catch(() => ({ messages: [] }));
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const last = messages.filter((m: { role: string }) => m.role === "user").at(-1)?.content ?? "";
+export async function onRequestPost(context: { request: Request; env: { XAI_API_KEY?: string } }) {
+  const body = await context.request.json().catch(() => ({ messages: [] as Msg[] }));
+  const messages: Msg[] = Array.isArray(body.messages) ? body.messages : [];
+  const last = messages.filter((m) => m.role === "user").at(-1)?.content ?? "";
+  const key = context.env.XAI_API_KEY;
 
-  const key = process.env.XAI_API_KEY;
   if (!key) {
     return new Response(localOracle(String(last)), {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
   }
 
-  const client = new OpenAI({ apiKey: key, baseURL: "https://api.x.ai/v1" });
-  const stream = await client.chat.completions.create({
-    model: "grok-4.6",
-    stream: true,
-    temperature: 0.5,
-    messages: [
-      { role: "system", content: SYSTEM },
-      ...messages
-        .filter((m: { role: string; content: string }) => m.role === "user" || m.role === "assistant")
-        .slice(-12)
-        .map((m: { role: "user" | "assistant"; content: string }) => ({
-          role: m.role,
-          content: String(m.content).slice(0, 4000),
-        })),
-    ],
+  const res = await fetch("https://api.x.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "grok-4.6",
+      stream: true,
+      temperature: 0.5,
+      messages: [
+        { role: "system", content: SYSTEM },
+        ...messages
+          .filter((m) => m.role === "user" || m.role === "assistant")
+          .slice(-12)
+          .map((m) => ({ role: m.role, content: String(m.content).slice(0, 4000) })),
+      ],
+    }),
   });
 
+  if (!res.ok || !res.body) {
+    return new Response(localOracle(String(last)), {
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
   const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
   const readable = new ReadableStream({
     async start(controller) {
+      const reader = res.body!.getReader();
+      let buffer = "";
       try {
-        for await (const chunk of stream) {
-          const t = chunk.choices[0]?.delta?.content ?? "";
-          if (t) controller.enqueue(encoder.encode(t));
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const data = trimmed.slice(5).trim();
+            if (data === "[DONE]") continue;
+            try {
+              const json = JSON.parse(data);
+              const t = json.choices?.[0]?.delta?.content ?? "";
+              if (t) controller.enqueue(encoder.encode(t));
+            } catch {
+              /* skip malformed SSE */
+            }
+          }
         }
       } catch {
         controller.enqueue(encoder.encode(localOracle(String(last))));

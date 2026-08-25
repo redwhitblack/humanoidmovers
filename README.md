@@ -15,4 +15,4 @@ Oracle (Ask Oracle) streams from `https://api.x.ai/v1` when `XAI_API_KEY` is set
 
 ## Production
 
-DigitalOcean App Platform, Node.js, `PORT` from the platform. Domain: humanoidmovers.com.
+Cloudflare Pages (free). Domain: humanoidmovers.com. Build: `npm run build`. Output: `out`. Functions in `/functions`.
